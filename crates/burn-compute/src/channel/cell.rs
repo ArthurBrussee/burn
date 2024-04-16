@@ -63,6 +63,14 @@ where
     fn sync(&self) {
         self.server.borrow_mut().sync()
     }
+
+    fn run_custom_command(
+        &self,
+        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
+        handles: &[&Handle<Server>],
+    ) {
+        self.server.borrow_mut().run_custom_command(f, handles)
+    }
 }
 
 /// This is unsafe, since no concurrency is supported by the `RefCell` channel.

@@ -36,7 +36,11 @@ where
     Read(Binding<Server>, Callback<Reader<Vec<u8>>>),
     Create(Vec<u8>, Callback<Handle<Server>>),
     Empty(usize, Callback<Handle<Server>>),
-    ExecuteKernel(Server::Kernel, Vec<Binding<Server>>),
+    ExecuteKernel(Server::Kernel, Vec<Handle<Server>>),
+    CustomCommand(
+        Box<dyn Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send>,
+        Vec<Handle<Server>>,
+    ),
     Sync(Callback<()>),
 }
 
@@ -70,6 +74,10 @@ where
                         server.sync();
                         callback.send(()).unwrap();
                     }
+                    Message::CustomCommand(callback, handles) => server.run_custom_command(
+                        callback,
+                        handles.iter().collect::<Vec<_>>().as_slice(),
+                    ),
                 };
             }
         });
@@ -138,6 +146,28 @@ where
         self.state.sender.send(Message::Sync(callback)).unwrap();
 
         self.response(response)
+    }
+
+    fn run_custom_command(
+        &self,
+        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
+        handles: &[&Handle<Server>],
+    ) {
+        // TODO: This doesn't work due to some lifetimes I don't quite understand :/ f has to be
+        // 'static somehow, but I'm not sure why. Making it 'static would largey defeat the point
+        // of this mechanism.
+        todo!();
+        // let (callback, response) = mpsc::channel();
+
+        // self.state
+        //     .sender
+        //     .send(Message::CustomCommand(
+        //         Box::new(f),
+        //         handles.iter().map(|h| (*h).clone()).collect::<Vec<_>>(),
+        //     ))
+        //     .unwrap();
+
+        // self.response(response)
     }
 }
 

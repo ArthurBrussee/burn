@@ -1,4 +1,4 @@
-use super::WgpuStorage;
+use super::{WgpuResource, WgpuStorage};
 use alloc::{borrow::Cow, sync::Arc};
 use burn_compute::{
     memory_management::MemoryManagement,
@@ -18,7 +18,7 @@ use wgpu::{
 pub struct WgpuServer<MM: MemoryManagement<WgpuStorage>> {
     memory_management: MM,
     device: Arc<wgpu::Device>,
-    queue: wgpu::Queue,
+    queue: Arc<wgpu::Queue>,
     encoder: CommandEncoder,
     pipelines: HashMap<String, Arc<ComputePipeline>>,
     tasks_max: usize,
@@ -33,7 +33,7 @@ where
     pub fn new(
         memory_management: MM,
         device: Arc<wgpu::Device>,
-        queue: wgpu::Queue,
+        queue: Arc<wgpu::Queue>,
         tasks_max: usize,
     ) -> Self {
         let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -51,7 +51,11 @@ where
         }
     }
 
-    fn submit(&mut self) {
+    pub fn submit(&mut self) {
+        assert!(
+            self.tasks.is_empty(),
+            "Tasks should be completed before submitting the current encoder."
+        );
         let mut new_encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -138,6 +142,20 @@ where
         self.submit();
 
         BufferReader::new(buffer_dest)
+    }
+
+    pub fn get_command_encoder(&mut self) -> &mut CommandEncoder {
+        self.register_tasks();
+        &mut self.encoder
+    }
+
+    pub fn run_custom_command<const D: usize>(
+        &mut self,
+        f: impl Fn(&CommandEncoder, [WgpuResource; D]),
+        handles: &[&server::Handle<Self>; D],
+    ) {
+        let resources = handles.map(|h| self.memory_management.get(&h.memory));
+        f(&self.encoder, resources);
     }
 }
 
@@ -271,5 +289,18 @@ where
     fn sync(&mut self) {
         self.submit();
         self.device.poll(wgpu::Maintain::Wait);
+    }
+
+    fn run_custom_command(
+        &mut self,
+        f: impl Fn(&mut Self, &[<Self::Storage as burn_compute::storage::ComputeStorage>::Resource]),
+        handles: &[&server::Handle<Self>],
+    ) {
+        let handles = handles
+            .iter()
+            .map(|handle| self.memory_management.get(&handle.memory))
+            .collect::<Vec<_>>();
+
+        f(self, &handles);
     }
 }

@@ -79,4 +79,14 @@ where
     pub fn autotune_result(&self, key: &Server::AutotuneKey) -> Option<usize> {
         self.tuner.read().unwrap().autotune_fastest(key)
     }
+
+    /// Run a custom command on the server.
+    pub fn run_custom_command(
+        &self,
+        f: impl Fn(&mut Server, &[<<Server as ComputeServer>::Storage as ComputeStorage>::Resource])
+            + Send,
+        handles: &[&Handle<Server>],
+    ) {
+        self.channel.run_custom_command(f, handles)
+    }
 }

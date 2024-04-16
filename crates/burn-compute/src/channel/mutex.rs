@@ -1,7 +1,6 @@
 use super::ComputeChannel;
 use crate::server::{Binding, ComputeServer, Handle};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use burn_common::reader::Reader;
 use spin::Mutex;
 
@@ -53,5 +52,13 @@ where
 
     fn sync(&self) {
         self.server.lock().sync()
+    }
+
+    fn run_custom_command(
+        &self,
+        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
+        handles: &[&Handle<Server>],
+    ) {
+        self.server.lock().run_custom_command(f, handles)
     }
 }

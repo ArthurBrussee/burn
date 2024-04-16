@@ -61,4 +61,16 @@ where
     fn sync(&mut self) {
         // Nothing to do with dummy backend.
     }
+
+    fn run_custom_command(
+        &mut self,
+        f: impl Fn(&mut Self, &[<Self::Storage as ComputeStorage>::Resource]) + Send,
+        handles: &[&Handle<Self>],
+    ) {
+        let resources = handles
+            .iter()
+            .map(|handle| self.memory_management.get(&handle.memory))
+            .collect::<Vec<_>>();
+        f(self, &resources);
+    }
 }
