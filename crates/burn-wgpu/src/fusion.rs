@@ -9,6 +9,7 @@ impl FusionDevice for WgpuDevice {
             WgpuDevice::VirtualGpu(index) => DeviceId::new(2, *index as u32),
             WgpuDevice::Cpu => DeviceId::new(3, 0),
             WgpuDevice::BestAvailable => DeviceId::new(4, 0),
+            WgpuDevice::Existing(id) => DeviceId::new(5, *id as u32),
         }
     }
 }
