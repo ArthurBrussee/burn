@@ -1,6 +1,7 @@
 use crate::{
     channel::ComputeChannel,
     server::{ComputeServer, Handle},
+    storage::ComputeStorage,
     tune::{AutotuneOperationSet, Tuner},
 };
 use alloc::vec::Vec;
@@ -78,5 +79,15 @@ where
     /// Get the fastest kernel for the given autotune key if it exists.
     pub fn autotune_result(&self, key: &Server::AutotuneKey) -> Option<usize> {
         self.tuner.read().unwrap().autotune_fastest(key)
+    }
+
+    /// Run a custom command on the server.
+    pub fn run_custom_command(
+        &self,
+        f: impl Fn(&mut Server, &[<<Server as ComputeServer>::Storage as ComputeStorage>::Resource])
+            + Send,
+        handles: &[&Handle<Server>],
+    ) {
+        self.channel.run_custom_command(f, handles)
     }
 }

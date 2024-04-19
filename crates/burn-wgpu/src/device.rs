@@ -41,6 +41,9 @@ pub enum WgpuDevice {
     /// A device might be identified as [Other](wgpu::DeviceType::Other) by [wgpu](wgpu), in this case, we chose this device over
     /// `IntegratedGpu` since it's often a discrete GPU.
     BestAvailable,
+
+    /// Use an extenerally created, existing wgpu device.
+    Existing(usize),
 }
 
 impl Default for WgpuDevice {
