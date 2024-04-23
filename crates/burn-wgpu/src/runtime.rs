@@ -13,6 +13,7 @@ use burn_compute::{
     ComputeRuntime,
 };
 use burn_jit::Runtime;
+use burn_tensor::backend::{DeviceId, DeviceOps};
 use std::marker::PhantomData;
 use wgpu::{AdapterInfo, DeviceDescriptor};
 
@@ -53,6 +54,18 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Runtime for WgpuRuntime<G, 
     }
 }
 
+impl DeviceOps for WgpuDevice {
+    fn id(&self) -> DeviceId {
+        match self {
+            WgpuDevice::DiscreteGpu(index) => DeviceId::new(0, *index as u32),
+            WgpuDevice::IntegratedGpu(index) => DeviceId::new(1, *index as u32),
+            WgpuDevice::VirtualGpu(index) => DeviceId::new(2, *index as u32),
+            WgpuDevice::Cpu => DeviceId::new(3, 0),
+            WgpuDevice::BestAvailable => DeviceId::new(4, 0),
+        }
+    }
+}
+
 /// The values that control how a WGPU Runtime will perform its calculations.
 pub struct RuntimeOptions {
     /// How the buffers are deallocated.
@@ -60,24 +73,39 @@ pub struct RuntimeOptions {
     /// Control the slicing strategy.
     pub slice_strategy: SliceStrategy,
     /// Control the amount of compute tasks to be aggregated into a single GPU command.
-    pub max_tasks: usize,
+    pub tasks_max: usize,
 }
 
 impl Default for RuntimeOptions {
     fn default() -> Self {
-        let max_tasks = match std::env::var("BURN_WGPU_MAX_TASKS") {
+        const DEFAULT_MAX_TASKS: usize = 16;
+
+        let tasks_max = match std::env::var("BURN_WGPU_MAX_TASKS") {
             Ok(value) => value
                 .parse::<usize>()
                 .expect("BURN_WGPU_MAX_TASKS should be a positive integer."),
-            Err(_) => 64, // 64 tasks by default
+            Err(_) => DEFAULT_MAX_TASKS,
         };
 
         Self {
-            dealloc_strategy: DeallocStrategy::new_period_tick(max_tasks * 2),
+            dealloc_strategy: DeallocStrategy::new_period_tick(1),
             slice_strategy: SliceStrategy::Ratio(0.8),
-            max_tasks,
+            tasks_max,
         }
     }
+}
+
+pub fn init_existing_device(
+    custom_id: usize,
+    adapter: Arc<wgpu::Adapter>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    options: RuntimeOptions,
+) -> WgpuDevice {
+    let client = create_client(adapter, device, queue, options);
+    let device = WgpuDevice::Existing(custom_id);
+    RUNTIME.register(&device, client);
+    device
 }
 
 pub fn init_existing_device(
@@ -131,7 +159,7 @@ fn create_client(
     let storage = WgpuStorage::new(device_wgpu.clone());
     let memory_management =
         SimpleMemoryManagement::new(storage, options.dealloc_strategy, options.slice_strategy);
-    let server = WgpuServer::new(memory_management, device_wgpu, queue, options.max_tasks);
+    let server = WgpuServer::new(memory_management, device, queue, options.tasks_max);
     let channel = MutexComputeChannel::new(server);
     let tuner_device_id = tuner_device_id(adapter.get_info());
     ComputeClient::new(channel, Arc::new(RwLock::new(Tuner::new(&tuner_device_id))))
