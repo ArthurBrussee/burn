@@ -46,7 +46,7 @@ impl<G: GraphicsApi> Runtime for WgpuRuntime<G> {
 
     fn client(device: &Self::Device) -> ComputeClient<Self::Server, Self::Channel> {
         RUNTIME.client(device, move || {
-            let (adapter, device_wgpu, queue) = pollster::block_on(create_wgpu_setup::<G>(&device));
+            let (adapter, device_wgpu, queue) = pollster::block_on(create_wgpu_setup::<G>(device));
             create_client(adapter, device_wgpu, queue, RuntimeOptions::default())
         })
     }
@@ -64,6 +64,7 @@ impl DeviceOps for WgpuDevice {
             WgpuDevice::VirtualGpu(index) => DeviceId::new(2, *index as u32),
             WgpuDevice::Cpu => DeviceId::new(3, 0),
             WgpuDevice::BestAvailable => DeviceId::new(4, 0),
+            WgpuDevice::Existing(index) => DeviceId::new(5, *index as u32),
         }
     }
 }
@@ -95,19 +96,6 @@ impl Default for RuntimeOptions {
             tasks_max,
         }
     }
-}
-
-pub fn init_existing_device(
-    custom_id: usize,
-    adapter: Arc<wgpu::Adapter>,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    options: RuntimeOptions,
-) -> WgpuDevice {
-    let client = create_client(adapter, device, queue, options);
-    let device = WgpuDevice::Existing(custom_id);
-    RUNTIME.register(&device, client);
-    device
 }
 
 pub fn init_existing_device(
@@ -161,7 +149,7 @@ fn create_client(
     let storage = WgpuStorage::new(device_wgpu.clone());
     let memory_management =
         SimpleMemoryManagement::new(storage, options.dealloc_strategy, options.slice_strategy);
-    let server = WgpuServer::new(memory_management, device_wgpu, queue, options.max_tasks);
+    let server = WgpuServer::new(memory_management, device_wgpu, queue, options.tasks_max);
     let channel = MutexComputeChannel::new(server);
     let tuner_device_id = tuner_device_id(adapter.get_info());
     ComputeClient::new(channel, Arc::new(RwLock::new(Tuner::new(&tuner_device_id))))

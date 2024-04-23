@@ -45,11 +45,7 @@ where
     ///
     /// This gives temporary exclusive access to the underlying server
     /// to run commands as needed.
-    fn run_custom_command(
-        &mut self,
-        f: impl Fn(&mut Self, &[<Self::Storage as ComputeStorage>::Resource]) + Send,
-        handles: &[&Handle<Self>],
-    );
+    fn run_custom_command(&mut self, f: impl Fn(&mut Self) + Send);
 }
 
 /// Server handle containing the [memory handle](MemoryManagement::Handle).

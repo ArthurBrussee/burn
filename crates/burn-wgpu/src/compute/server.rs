@@ -144,18 +144,16 @@ where
         BufferReader::new(buffer_dest)
     }
 
+    pub fn get_resource_binding(&mut self, binding: server::Binding<Self>) -> WgpuResource {
+        self.memory_management.get(binding.memory)
+    }
+
     pub fn get_command_encoder(&mut self) -> &mut CommandEncoder {
-        self.register_tasks();
         &mut self.encoder
     }
 
-    pub fn run_custom_command<const D: usize>(
-        &mut self,
-        f: impl Fn(&CommandEncoder, [WgpuResource; D]),
-        handles: &[&server::Handle<Self>; D],
-    ) {
-        let resources = handles.map(|h| self.memory_management.get(&h.memory));
-        f(&self.encoder, resources);
+    pub fn run_custom_command<const D: usize>(&mut self, f: impl Fn(&CommandEncoder)) {
+        f(&self.encoder);
     }
 }
 
@@ -291,16 +289,7 @@ where
         self.device.poll(wgpu::Maintain::Wait);
     }
 
-    fn run_custom_command(
-        &mut self,
-        f: impl Fn(&mut Self, &[<Self::Storage as burn_compute::storage::ComputeStorage>::Resource]),
-        handles: &[&server::Handle<Self>],
-    ) {
-        let handles = handles
-            .iter()
-            .map(|handle| self.memory_management.get(&handle.memory))
-            .collect::<Vec<_>>();
-
-        f(self, &handles);
+    fn run_custom_command(&mut self, f: impl Fn(&mut Self)) {
+        f(self);
     }
 }
