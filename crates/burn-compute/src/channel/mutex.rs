@@ -54,11 +54,7 @@ where
         self.server.lock().sync()
     }
 
-    fn run_custom_command(
-        &self,
-        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
-        handles: &[&Handle<Server>],
-    ) {
-        self.server.lock().run_custom_command(f, handles)
+    fn run_custom_command(&self, f: impl Fn(&mut Server) + Send) {
+        self.server.lock().run_custom_command(f)
     }
 }

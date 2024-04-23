@@ -21,9 +21,5 @@ pub trait ComputeChannel<Server: ComputeServer>: Clone + core::fmt::Debug + Send
     fn sync(&self);
 
     /// Run a custom function on the server with the givenn resources.
-    fn run_custom_command(
-        &self,
-        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
-        handles: &[&Handle<Server>],
-    );
+    fn run_custom_command(&self, f: impl Fn(&mut Server) + Send);
 }

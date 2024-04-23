@@ -70,10 +70,6 @@ where
                         server.sync();
                         callback.send(()).unwrap();
                     }
-                    Message::CustomCommand(callback, handles) => server.run_custom_command(
-                        callback,
-                        handles.iter().collect::<Vec<_>>().as_slice(),
-                    ),
                 };
             }
         });
@@ -144,11 +140,7 @@ where
         self.response(response)
     }
 
-    fn run_custom_command(
-        &self,
-        f: impl Fn(&mut Server, &[<Server::Storage as ComputeStorage>::Resource]) + Send,
-        handles: &[&Handle<Server>],
-    ) {
+    fn run_custom_command(&self, _f: impl Fn(&mut Server) + Send) {
         // TODO: This doesn't work due to some lifetimes I don't quite understand :/ f has to be
         // 'static somehow, but I'm not sure why. Making it 'static would largey defeat the point
         // of this mechanism.

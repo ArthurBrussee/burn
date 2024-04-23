@@ -81,12 +81,7 @@ where
     }
 
     /// Run a custom command on the server.
-    pub fn run_custom_command(
-        &self,
-        f: impl Fn(&mut Server, &[<<Server as ComputeServer>::Storage as ComputeStorage>::Resource])
-            + Send,
-        handles: &[&Handle<Server>],
-    ) {
-        self.channel.run_custom_command(f, handles)
+    pub fn run_custom_command(&self, f: impl Fn(&mut Server) + Send) {
+        self.channel.run_custom_command(f)
     }
 }
