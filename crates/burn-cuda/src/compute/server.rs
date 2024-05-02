@@ -113,6 +113,10 @@ impl<MM: MemoryManagement<CudaStorage>> ComputeServer for CudaServer<MM> {
         let ctx = self.get_context();
         ctx.sync();
     }
+
+    fn run_custom_command(&mut self, f: impl Fn(&mut Self) + Send) {
+        f(self);
+    }
 }
 
 impl<MM: MemoryManagement<CudaStorage>> CudaContext<MM> {
