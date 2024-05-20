@@ -52,10 +52,6 @@ where
     }
 
     pub fn submit(&mut self) {
-        assert!(
-            self.tasks.is_empty(),
-            "Tasks should be completed before submitting the current encoder."
-        );
         let mut new_encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
