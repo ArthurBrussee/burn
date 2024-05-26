@@ -242,6 +242,7 @@ impl OnnxGraph {
                 NodeType::Cos => graph.register(Self::cos_conversion(node)),
                 NodeType::Conv1d => graph.register(Self::conv1d_conversion::<PS>(node)),
                 NodeType::Conv2d => graph.register(Self::conv2d_conversion::<PS>(node)),
+                NodeType::Max => graph.register(Self::max_conversion(node)),
                 NodeType::MaxPool1d => graph.register(Self::max_pool1d_conversion(node)),
                 NodeType::MaxPool2d => graph.register(Self::max_pool2d_conversion(node)),
                 NodeType::PRelu => graph.register(Self::prelu_conversion::<PS>(node)),
@@ -250,6 +251,10 @@ impl OnnxGraph {
                 NodeType::MatMul => graph.register(Self::matmul_conversion(node)),
                 NodeType::Neg => graph.register(Self::neg_conversion(node)),
                 NodeType::Not => graph.register(Self::not_conversion(node)),
+                NodeType::Greater => graph.register(Self::greater_conversion(node)),
+                NodeType::GreaterOrEqual => graph.register(Self::greater_or_equal_conversion(node)),
+                NodeType::Less => graph.register(Self::less_conversion(node)),
+                NodeType::LessOrEqual => graph.register(Self::less_or_equal_conversion(node)),
                 NodeType::LayerNormalization => {
                     graph.register(Self::layer_norm_conversion::<PS>(node))
                 }
@@ -268,6 +273,7 @@ impl OnnxGraph {
                 NodeType::Sqrt => graph.register(Self::sqrt_conversion(node)),
                 NodeType::Tanh => graph.register(Self::tanh_conversion(node)),
                 NodeType::Constant => graph.register(Self::constant_conversion::<PS>(node)),
+                NodeType::Min => graph.register(Self::min_conversion(node)),
                 NodeType::ReduceMax => graph.register(Self::reduce_max_conversion(node)),
                 NodeType::ReduceMean => graph.register(Self::reduce_mean_conversion(node)),
                 NodeType::ReduceSum => graph.register(Self::reduce_sum_conversion(node)),
@@ -416,6 +422,14 @@ impl OnnxGraph {
         BinaryNode::equal(lhs, rhs, output)
     }
 
+    fn max_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+
+        BinaryNode::max_pair(lhs, rhs, output)
+    }
+
     fn erf_conversion(node: Node) -> UnaryNode {
         let input = node.inputs.first().unwrap().to_type();
         let output = node.outputs.first().unwrap().to_type();
@@ -490,6 +504,14 @@ impl OnnxGraph {
         let shape = reshape_config(&node);
 
         ReshapeNode::new(input, output, shape)
+    }
+
+    fn min_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+
+        BinaryNode::min_pair(lhs, rhs, output)
     }
 
     fn reduce_max_conversion(node: Node) -> UnaryNode {
@@ -709,6 +731,7 @@ impl OnnxGraph {
         let name = &node.name;
         Conv2dNode::<PS>::new(name, input, output, weight, bias, config)
     }
+
     fn max_pool1d_conversion(node: Node) -> MaxPool1dNode {
         let input = node.inputs.first().unwrap().to_tensor_type();
         let output = node.outputs.first().unwrap().to_tensor_type();
@@ -801,6 +824,34 @@ impl OnnxGraph {
         let input = node.inputs.first().unwrap().to_type();
         let output = node.outputs.first().unwrap().to_type();
         UnaryNode::not(input, output)
+    }
+
+    fn greater_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+        BinaryNode::greater(lhs, rhs, output)
+    }
+
+    fn less_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+        BinaryNode::lower(lhs, rhs, output)
+    }
+
+    fn greater_or_equal_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+        BinaryNode::greater_equal(lhs, rhs, output)
+    }
+
+    fn less_or_equal_conversion(node: Node) -> BinaryNode {
+        let lhs = node.inputs.first().unwrap().to_type();
+        let rhs = node.inputs.get(1).unwrap().to_type();
+        let output = node.outputs.first().unwrap().to_type();
+        BinaryNode::lower_equal(lhs, rhs, output)
     }
 
     fn pow_conversion(node: Node) -> BinaryNode {

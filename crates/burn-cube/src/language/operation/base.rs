@@ -1,4 +1,6 @@
-use crate::dialect::{BinaryOperator, Elem, Item, Operator, Variable, Vectorization};
+use crate::dialect::{
+    BinaryOperator, Elem, Item, Operator, UnaryOperator, Variable, Vectorization,
+};
 use crate::language::{CubeContext, ExpandElement};
 
 pub(crate) fn binary_expand<F>(
@@ -10,18 +12,28 @@ pub(crate) fn binary_expand<F>(
 where
     F: Fn(BinaryOperator) -> Operator,
 {
-    let lhs: Variable = *lhs;
-    let rhs: Variable = *rhs;
+    let lhs_var: Variable = *lhs;
+    let rhs_var: Variable = *rhs;
 
-    let item = lhs.item();
-    check_vectorization(item.vectorization, rhs.item().vectorization);
+    let item_lhs = lhs.item();
+    let item_rhs = rhs.item();
 
-    let out = context.create_local(item);
+    check_vectorization(item_lhs.vectorization, item_rhs.vectorization);
+
+    // We can only reuse rhs.
+    let out = if lhs.can_mut() {
+        lhs
+    } else if item_rhs == item_lhs && rhs.can_mut() {
+        rhs
+    } else {
+        context.create_local(item_lhs)
+    };
+
     let out_var = *out;
 
     let op = func(BinaryOperator {
-        lhs,
-        rhs,
+        lhs: lhs_var,
+        rhs: rhs_var,
         out: out_var,
     });
 
@@ -76,6 +88,8 @@ where
     let lhs_var: Variable = *lhs;
     let rhs: Variable = *rhs;
 
+    check_vectorization(lhs_var.item().vectorization, rhs.item().vectorization);
+
     let op = func(BinaryOperator {
         lhs: lhs_var,
         rhs,
@@ -85,6 +99,36 @@ where
     context.register(op);
 
     lhs
+}
+
+pub(crate) fn unary_expand<F>(
+    context: &mut CubeContext,
+    input: ExpandElement,
+    func: F,
+) -> ExpandElement
+where
+    F: Fn(UnaryOperator) -> Operator,
+{
+    let input_var: Variable = *input;
+
+    let item = input.item();
+
+    let out = if input.can_mut() {
+        input
+    } else {
+        context.create_local(item)
+    };
+
+    let out_var = *out;
+
+    let op = func(UnaryOperator {
+        input: input_var,
+        out: out_var,
+    });
+
+    context.register(op);
+
+    out
 }
 
 fn check_vectorization(lhs: Vectorization, rhs: Vectorization) {
