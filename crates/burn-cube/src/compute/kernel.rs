@@ -29,6 +29,10 @@ pub trait CubeTask: Send + Sync {
     fn compile(&self) -> CompiledKernel;
     /// Launch settings.
     fn launch_settings(&self) -> LaunchSettings;
+
+    fn label(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Wraps a [kernel](Kernel) with its [cube count](CubeCount) to create a [cube task](CubeTask).

@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use super::{WgpuResource, WgpuStorage};
 use alloc::{borrow::Cow, sync::Arc};
 use burn_compute::{
@@ -9,7 +11,7 @@ use burn_jit::JitAutotuneKey;
 use burn_tensor::Reader;
 use hashbrown::HashMap;
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
+    util::{BufferInitDescriptor, DeviceExt, StagingBelt},
     BindGroup, CommandEncoder, ComputePipeline, ShaderModuleDescriptor,
 };
 
@@ -20,10 +22,13 @@ pub struct WgpuServer<MM: MemoryManagement<WgpuStorage>> {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     encoder: CommandEncoder,
+    staging_belt: StagingBelt,
     pipelines: HashMap<String, Arc<ComputePipeline>>,
     tasks_max: usize,
     tasks_count: usize,
 }
+
+const SMALL_ALLOC_SIZE: usize = 256;
 
 impl<MM> WgpuServer<MM>
 where
@@ -45,6 +50,7 @@ where
             device,
             queue,
             encoder,
+            staging_belt: StagingBelt::new(SMALL_ALLOC_SIZE as u64),
             pipelines: HashMap::new(),
             tasks_max,
             tasks_count: 0,
@@ -52,6 +58,8 @@ where
     }
 
     pub fn submit(&mut self) {
+        self.staging_belt.finish();
+
         let mut new_encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -62,10 +70,13 @@ where
 
         // Cleanup allocations and deallocations.
         self.memory_management.storage().perform_deallocations();
+
+        self.staging_belt.recall();
     }
 
     fn register_compute(
         &mut self,
+        label: Option<&str>,
         pipeline: Arc<ComputePipeline>,
         bind_group: BindGroup,
         work_group: CubeCount,
@@ -73,7 +84,7 @@ where
         let mut compute = self
             .encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
+                label,
                 timestamp_writes: None,
             });
 
@@ -224,25 +235,37 @@ where
     /// fully utilize the GPU.
     fn create(&mut self, data: &[u8]) -> server::Handle<Self> {
         let handle = server::Handle::new(self.memory_management.reserve(data.len()));
+        // Nothing to copy - don't need to do work.
+        if data.is_empty() {
+            return handle;
+        }
         let binding = handle.clone().binding();
-
-        let buffer_src = Arc::new(self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Buffer Src"),
-            contents: data,
-            usage: wgpu::BufferUsages::COPY_SRC,
-        }));
-
         let resource = self.memory_management.get(binding.memory);
 
-        self.encoder.copy_buffer_to_buffer(
-            &buffer_src,
-            0,
-            &resource.buffer,
-            resource.offset(),
-            buffer_src.size(),
-        );
+        if data.len() < SMALL_ALLOC_SIZE {
+            let mut write_buf = self.staging_belt.write_buffer(
+                &mut self.encoder,
+                &resource.buffer,
+                0,
+                NonZeroU64::new(data.len() as u64).unwrap(),
+                &self.device,
+            );
+            write_buf.copy_from_slice(data);
+        } else {
+            let buffer_src = Arc::new(self.device.create_buffer_init(&BufferInitDescriptor {
+                label: Some("Buffer Src"),
+                contents: data,
+                usage: wgpu::BufferUsages::COPY_SRC,
+            }));
+            self.encoder.copy_buffer_to_buffer(
+                &buffer_src,
+                0,
+                &resource.buffer,
+                resource.offset(),
+                buffer_src.size(),
+            );
+        }
         self.tasks_count += 1;
-
         handle
     }
 
@@ -252,6 +275,8 @@ where
 
     fn execute(&mut self, kernel: Self::Kernel, bindings: Vec<server::Binding<Self>>) {
         let work_group = kernel.launch_settings().cube_count;
+        let label = kernel.label();
+
         let pipeline = self.pipeline(kernel);
         let group_layout = pipeline.get_bind_group_layout(0);
 
@@ -275,7 +300,7 @@ where
             entries: &entries,
         });
 
-        self.register_compute(pipeline, bind_group, work_group);
+        self.register_compute(label, pipeline, bind_group, work_group);
 
         if self.tasks_count >= self.tasks_max {
             self.submit();
