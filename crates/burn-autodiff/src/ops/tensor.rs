@@ -2369,6 +2369,7 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
         }
     }
 
+    #[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
     fn float_sort<const D: usize>(
         tensor: FloatTensor<Self, D>,
         dim: usize,
@@ -2391,6 +2392,7 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
         }
     }
 
+    #[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
     fn float_sort_with_indices<const D: usize>(
         tensor: FloatTensor<Self, D>,
         dim: usize,
@@ -2419,6 +2421,7 @@ impl<B: Backend, C: CheckpointStrategy> FloatTensorOps<Self> for Autodiff<B, C> 
         }
     }
 
+    #[cfg(any(feature = "wasm-sync", not(target_family = "wasm")))]
     fn float_argsort<const D: usize>(
         tensor: FloatTensor<Self, D>,
         dim: usize,
