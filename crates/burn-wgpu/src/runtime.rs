@@ -75,7 +75,11 @@ impl DeviceOps for WgpuDevice {
             WgpuDevice::VirtualGpu(index) => DeviceId::new(2, *index as u32),
             WgpuDevice::Cpu => DeviceId::new(3, 0),
             WgpuDevice::BestAvailable => DeviceId::new(4, 0),
-            WgpuDevice::Existing(index) => DeviceId::new(5, *index as u32),
+            // For an existing device, use the 64 bit wgpu device ID as the burn DeviceID.
+            // We're only storing 32 bits, so wrap the the 64 bit value to 32 bits. This
+            // might collide - but a 1 in 4 billion chance seems ok given there's only a few
+            // devices in flight at any time.
+            WgpuDevice::Existing(id) => DeviceId::new(5, (id.inner() % (u32::MAX as u64)) as u32),
         }
     }
 }
@@ -110,16 +114,15 @@ impl Default for RuntimeOptions {
 }
 
 pub fn init_existing_device(
-    custom_id: usize,
     adapter: Arc<wgpu::Adapter>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     options: RuntimeOptions,
 ) -> WgpuDevice {
+    let device_id = WgpuDevice::Existing(device.as_ref().global_id());
     let client = create_client(adapter, device, queue, options);
-    let device = WgpuDevice::Existing(custom_id);
-    RUNTIME.register(&device, client);
-    device
+    RUNTIME.register(&device_id, client);
+    device_id
 }
 
 /// Init the client sync, useful to configure the runtime options.
@@ -140,6 +143,7 @@ async fn create_wgpu_setup<G: GraphicsApi>(
     device: &WgpuDevice,
 ) -> (Arc<wgpu::Adapter>, Arc<wgpu::Device>, Arc<wgpu::Queue>) {
     let (device_wgpu, queue, adapter) = select_device::<G>(device).await;
+
     log::info!(
         "Created wgpu compute server on device {:?} => {:?}",
         device,
@@ -163,6 +167,7 @@ fn create_client(
     let server = WgpuServer::new(memory_management, device_wgpu, queue, options.tasks_max);
     let channel = MutexComputeChannel::new(server);
     let tuner_device_id = tuner_device_id(adapter.get_info());
+
     ComputeClient::new(channel, Arc::new(RwLock::new(Tuner::new(&tuner_device_id))))
 }
 
@@ -250,7 +255,7 @@ fn select_adapter<G: GraphicsApi>(device: &WgpuDevice) -> wgpu::Adapter {
                 WgpuDevice::Cpu => device_type == DeviceType::Cpu,
                 WgpuDevice::BestAvailable => true,
                 WgpuDevice::Existing(_) => {
-                    panic!("Cannot automatically create a client for an existing device! Please use init_existing_device instead.")
+                    unreachable!("Cannot select an adapter for an existing device.")
                 }
             };
 
@@ -337,7 +342,7 @@ fn select_adapter<G: GraphicsApi>(device: &WgpuDevice) -> wgpu::Adapter {
                 panic!("No adapter found for graphics API {:?}", G::default());
             }
         }
-        WgpuDevice::Existing(_) => unreachable!(),
+        WgpuDevice::Existing(_) => unreachable!("Cannot select an adapter for an existing device."),
     };
 
     log::info!("Using adapter {:?}", adapter.get_info());
