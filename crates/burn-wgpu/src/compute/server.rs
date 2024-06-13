@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use super::{WgpuResource, WgpuStorage};
+use super::WgpuStorage;
 use alloc::{borrow::Cow, sync::Arc};
 use burn_compute::{
     memory_management::MemoryManagement,
@@ -8,12 +8,17 @@ use burn_compute::{
 };
 use burn_cube::prelude::*;
 use burn_jit::JitAutotuneKey;
-use burn_tensor::Reader;
+use burn_tensor::{backend::SyncType, Reader};
 use hashbrown::HashMap;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt, StagingBelt},
     BindGroup, CommandEncoder, ComputePipeline, ShaderModuleDescriptor,
 };
+
+// Allocations with existing data smaller than this can use a staging belt
+// which speeds up the allocation. A higher number here will catch more
+// allocations, but can also increase memory usage.
+const SMALL_ALLOC_SIZE: usize = 512;
 
 /// Wgpu compute server.
 #[derive(Debug)]
@@ -55,23 +60,6 @@ where
             tasks_max,
             tasks_count: 0,
         }
-    }
-
-    pub fn submit(&mut self) {
-        self.staging_belt.finish();
-
-        let mut new_encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        core::mem::swap(&mut new_encoder, &mut self.encoder);
-
-        self.queue.submit(Some(new_encoder.finish()));
-        self.tasks_count = 0;
-
-        // Cleanup allocations and deallocations.
-        self.memory_management.storage().perform_deallocations();
-
-        self.staging_belt.recall();
     }
 
     fn register_compute(
@@ -148,7 +136,7 @@ where
         );
         self.tasks_count += 1;
 
-        self.submit();
+        self.sync(SyncType::Flush);
 
         BufferReader::new(buffer_dest)
     }
@@ -228,6 +216,13 @@ where
         Reader::Concrete(self.buffer_reader(binding).read(&self.device))
     }
 
+    fn get_resource(
+        &mut self,
+        binding: server::Binding<Self>,
+    ) -> <Self::Storage as burn_compute::storage::ComputeStorage>::Resource {
+        self.memory_management.get(binding.memory)
+    }
+
     /// When we create a new handle from existing data, we use custom allocations so that we don't
     /// have to execute the current pending tasks.
     ///
@@ -235,37 +230,43 @@ where
     /// fully utilize the GPU.
     fn create(&mut self, data: &[u8]) -> server::Handle<Self> {
         let handle = server::Handle::new(self.memory_management.reserve(data.len()));
-        // Nothing to copy - don't need to do work.
-        if data.is_empty() {
-            return handle;
-        }
-        let binding = handle.clone().binding();
-        let resource = self.memory_management.get(binding.memory);
+        let non_zero_len = NonZeroU64::new(data.len() as u64);
 
-        if data.len() < SMALL_ALLOC_SIZE {
-            let mut write_buf = self.staging_belt.write_buffer(
-                &mut self.encoder,
-                &resource.buffer,
-                0,
-                NonZeroU64::new(data.len() as u64).unwrap(),
-                &self.device,
-            );
-            write_buf.copy_from_slice(data);
-        } else {
-            let buffer_src = Arc::new(self.device.create_buffer_init(&BufferInitDescriptor {
-                label: Some("Buffer Src"),
-                contents: data,
-                usage: wgpu::BufferUsages::COPY_SRC,
-            }));
-            self.encoder.copy_buffer_to_buffer(
-                &buffer_src,
-                0,
-                &resource.buffer,
-                resource.offset(),
-                buffer_src.size(),
-            );
+        // If there's nothing to copy, don't need to do any work here.
+        if let Some(len) = non_zero_len {
+            let binding = handle.clone().binding();
+            let resource = self.memory_management.get(binding.memory);
+
+            if data.len() < SMALL_ALLOC_SIZE {
+                // Use a staging belt if the allocation is small enough. This is faster than allocating a new buffer.
+                // Ideally, we could use queue.write_buffer_with(), which seems to be the recommended method for performance,
+                // but that doesn't seem to work, as we might re-use a buffer multiple times, and need to schedule this
+                // precisely in the encoder.
+                let mut write_buf = self.staging_belt.write_buffer(
+                    &mut self.encoder,
+                    &resource.buffer,
+                    0,
+                    len,
+                    &self.device,
+                );
+                write_buf.copy_from_slice(data);
+            } else {
+                let buffer_src = Arc::new(self.device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("Buffer Src"),
+                    contents: data,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                }));
+                self.encoder.copy_buffer_to_buffer(
+                    &buffer_src,
+                    0,
+                    &resource.buffer,
+                    resource.offset(),
+                    buffer_src.size(),
+                );
+            }
+            self.tasks_count += 1;
         }
-        self.tasks_count += 1;
+
         handle
     }
 
@@ -303,16 +304,29 @@ where
         self.register_compute(label, pipeline, bind_group, work_group);
 
         if self.tasks_count >= self.tasks_max {
-            self.submit();
+            self.sync(SyncType::Flush);
         }
     }
 
-    fn sync(&mut self) {
-        self.submit();
-        self.device.poll(wgpu::Maintain::Wait);
-    }
+    fn sync(&mut self, sync_type: SyncType) {
+        // Flush commands to the queue.
+        self.staging_belt.finish();
 
-    fn run_custom_command(&mut self, f: impl Fn(&mut Self)) {
-        f(self);
+        let mut new_encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        core::mem::swap(&mut new_encoder, &mut self.encoder);
+
+        self.queue.submit(Some(new_encoder.finish()));
+        self.tasks_count = 0;
+
+        // Cleanup allocations and deallocations.
+        self.memory_management.storage().perform_deallocations();
+
+        self.staging_belt.recall();
+
+        if sync_type == SyncType::Wait {
+            self.device.poll(wgpu::Maintain::Wait);
+        }
     }
 }

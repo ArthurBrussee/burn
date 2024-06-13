@@ -7,6 +7,7 @@ use burn_compute::{
 use burn_cube::ir::CubeDim;
 use burn_cube::prelude::*;
 use burn_jit::JitAutotuneKey;
+use burn_tensor::backend::SyncType;
 use cudarc::driver::sys::CUctx_st;
 use cudarc::driver::sys::CUfunc_st;
 use std::collections::HashMap;
@@ -110,9 +111,24 @@ impl<MM: MemoryManagement<CudaStorage>> ComputeServer for CudaServer<MM> {
         // self.memory_management.storage().perform_deallocations();
     }
 
-    fn sync(&mut self) {
+    fn sync(&mut self, sync_type: SyncType) {
+        match sync_type {
+            // Synchronize the stream if waiting.
+            SyncType::Wait => {
+                let ctx = self.get_context();
+                ctx.sync();
+            }
+            // Nothing to do - all tasks are already submitted to the stream.
+            SyncType::Flush => (),
+        }
+    }
+
+    fn get_resource(
+        &mut self,
+        binding: server::Binding<Self>,
+    ) -> <Self::Storage as burn_compute::storage::ComputeStorage>::Resource {
         let ctx = self.get_context();
-        ctx.sync();
+        ctx.memory_management.get(binding.memory)
     }
 
     fn run_custom_command(&mut self, f: impl Fn(&mut Self) + Send) {

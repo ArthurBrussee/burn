@@ -3,7 +3,8 @@ use crate::{
     storage::ComputeStorage,
     tune::AutotuneKey,
 };
-use burn_common::reader::Reader;
+use alloc::vec::Vec;
+use burn_common::{reader::Reader, sync_type::SyncType};
 use core::fmt::Debug;
 
 /// The compute server is responsible for handling resources and computations over resources.
@@ -26,6 +27,12 @@ where
     /// Given a handle, returns the owned resource as bytes.
     fn read(&mut self, binding: Binding<Self>) -> Reader<Vec<u8>>;
 
+    /// Given a resource handle, returns the storage resource.
+    fn get_resource(
+        &mut self,
+        binding: Binding<Self>,
+    ) -> <Self::Storage as ComputeStorage>::Resource;
+
     /// Given a resource as bytes, stores it and returns the memory handle.
     fn create(&mut self, data: &[u8]) -> Handle<Self>;
 
@@ -39,13 +46,7 @@ where
     fn execute(&mut self, kernel: Self::Kernel, bindings: Vec<Binding<Self>>);
 
     /// Wait for the completion of every task in the server.
-    fn sync(&mut self);
-
-    /// Executes the given closure with the given memory `handles`.
-    ///
-    /// This gives temporary exclusive access to the underlying server
-    /// to run commands as needed.
-    fn run_custom_command(&mut self, f: impl Fn(&mut Self) + Send);
+    fn sync(&mut self, command: SyncType);
 }
 
 /// Server handle containing the [memory handle](MemoryManagement::Handle).
