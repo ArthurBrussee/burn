@@ -43,18 +43,23 @@ impl LaunchArg for GlobalTensor {
     type RuntimeArg<R: Runtime> = GlobalTensorArg<R>;
     type CompilationArg = GlobalTensorCompilationArg;
 
-    fn compilation_arg<R: Runtime>(runtime_arg: &Self::RuntimeArg<R>) -> Self::CompilationArg {
-        let tensor =
-            <Tensor<Vector<DynElem, DynSize>> as LaunchArg>::compilation_arg(&runtime_arg.tensor);
+    fn register<R: Runtime>(arg: Self::RuntimeArg<R>, launcher: &mut KernelLauncher<R>) -> Self::CompilationArg {
+        let ty = arg.ty;
+        let broadcasted = arg.broadcasted;
+
+        // Register the dynamic element/size types in the scope so that
+        // Tensor::register can resolve them via scope.resolve_type().
+        launcher.with_scope(|scope| {
+            scope.register_type::<DynElem>(ty.storage_type());
+            scope.register_size::<DynSize>(ty.vector_size());
+        });
+
+        let tensor = <Tensor<Vector<DynElem, DynSize>> as LaunchArg>::register(arg.tensor, launcher);
         GlobalTensorCompilationArg {
             tensor,
-            ty: runtime_arg.ty,
-            broadcasted: runtime_arg.broadcasted,
+            ty,
+            broadcasted,
         }
-    }
-
-    fn register<R: Runtime>(arg: Self::RuntimeArg<R>, launcher: &mut KernelLauncher<R>) {
-        launcher.register_tensor(arg.tensor, arg.ty);
     }
 
     fn expand(arg: &Self::CompilationArg, builder: &mut KernelBuilder) -> GlobalTensorExpand {

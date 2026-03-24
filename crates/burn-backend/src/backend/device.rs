@@ -432,9 +432,6 @@ mod tests {
             }
         }
 
-        fn device_count(_type_id: u16) -> usize {
-            1
-        }
     }
 
     impl DeviceOps for TestDeviceA {}
@@ -458,9 +455,6 @@ mod tests {
             }
         }
 
-        fn device_count(_type_id: u16) -> usize {
-            1
-        }
     }
 
     impl DeviceOps for TestDeviceB {}

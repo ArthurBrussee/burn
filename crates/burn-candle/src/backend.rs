@@ -190,10 +190,6 @@ impl burn_backend::Device for CandleDevice {
         }
     }
 
-    fn device_count(type_id: u16) -> usize {
-        // TODO: Fix that
-        1
-    }
 }
 impl DeviceOps for CandleDevice {}
 

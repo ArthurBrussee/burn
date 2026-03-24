@@ -2,9 +2,8 @@ use crate::event_utils::example_instrumented_event;
 use crate::workers::WorkerHandle;
 use burn::Tensor;
 use burn::collective::{AllReduceStrategy, CollectiveConfig, ReduceOperation};
-use burn::prelude::{Backend, DeviceOps};
+use burn::prelude::Backend;
 use burn::tensor::Shape;
-use burn::tensor::backend::DeviceId;
 use clap::{Parser, ValueEnum};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
@@ -177,12 +176,7 @@ fn run(args: &Args) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
 #[tracing::instrument(level = "trace", skip(args))]
 fn run_backend<B: Backend>(args: &Args) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let type_id = 0;
-    let device_count = B::Device::device_count(type_id);
-
-    let devices = (0..device_count)
-        .map(|idx| B::Device::from_id(DeviceId::new(type_id, idx as u32)))
-        .collect::<Vec<_>>();
+    let devices = vec![B::Device::default()];
 
     // Duplicate the devices to force a heterogeneous setup.
     let devices = devices

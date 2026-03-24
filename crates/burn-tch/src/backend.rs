@@ -88,11 +88,6 @@ impl burn_backend::Device for LibTorchDevice {
             LibTorchDevice::Vulkan => DeviceId::new(3, 0),
         }
     }
-
-    fn device_count(_type_id: u16) -> usize {
-        // TODO: Somehow find the info using the tch API.
-        1
-    }
 }
 
 impl DeviceOps for LibTorchDevice {}

@@ -373,27 +373,6 @@ impl burn_backend::Device for DispatchDevice {
         device_id
     }
 
-    fn device_count(type_id: u16) -> usize {
-        let (dispatch_id, backend_type_id) = Self::decode_type_id(type_id);
-        match dispatch_id {
-            #[cfg(feature = "cpu")]
-            BackendId::Cpu => CpuDevice::device_count(backend_type_id),
-            #[cfg(feature = "cuda")]
-            BackendId::Cuda => CudaDevice::device_count(backend_type_id),
-            #[cfg(wgpu_metal)]
-            BackendId::Metal => WgpuDevice::device_count(backend_type_id),
-            #[cfg(feature = "rocm")]
-            BackendId::Rocm => RocmDevice::device_count(backend_type_id),
-            #[cfg(wgpu_vulkan)]
-            BackendId::Vulkan => WgpuDevice::device_count(backend_type_id),
-            #[cfg(wgpu_webgpu)]
-            BackendId::WebGpu => WgpuDevice::device_count(backend_type_id),
-            #[cfg(feature = "ndarray")]
-            BackendId::NdArray => NdArrayDevice::device_count(backend_type_id),
-            #[cfg(feature = "tch")]
-            BackendId::LibTorch => LibTorchDevice::device_count(backend_type_id),
-        }
-    }
 }
 
 #[cfg(feature = "cpu")]

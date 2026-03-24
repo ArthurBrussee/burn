@@ -4,7 +4,7 @@ use burn::{
     nn::transformer::TransformerEncoderConfig,
     optim::{AdamConfig, decay::WeightDecayConfig},
     prelude::*,
-    tensor::backend::{AutodiffBackend, DeviceId},
+    tensor::backend::AutodiffBackend,
 };
 
 use text_classification::{AgNewsDataset, training::ExperimentConfig};
@@ -18,12 +18,7 @@ type ElemType = burn::tensor::f16;
 type ElemType = burn::tensor::flex32;
 
 pub fn launch_multi<B: AutodiffBackend>() {
-    let type_id = 0;
-    let num_devices = B::Device::device_count(type_id);
-
-    let devices = (0..num_devices)
-        .map(|i| B::Device::from_id(DeviceId::new(type_id, i as u32)))
-        .collect();
+    let devices = vec![B::Device::default()];
 
     launch::<B>(devices)
 }
