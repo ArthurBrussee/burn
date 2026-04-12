@@ -190,23 +190,21 @@ pub(crate) fn create_key<R: Runtime>(
     input: &TuneInput<R, MatmulOptimizationTuneArg<R>>,
 ) -> FusedMatmulAutotuneKey {
     let opt = input.optimization();
-    let context = match input.context() {
-        TuneContext::Original(context) => context,
-        TuneContext::Fork(_) => panic!("Not supported when generating key"),
-    };
+    let tensors = input.tensors();
+    let handles = input.handles();
 
-    let lhs = context.tensors.get(&opt.info.matmul.op.lhs.id).unwrap();
-    let rhs = context.tensors.get(&opt.info.matmul.op.rhs.id).unwrap();
-    let out = context.tensors.get(&opt.info.matmul.op.out.id).unwrap();
+    let lhs = tensors.get(&opt.info.matmul.op.lhs.id).unwrap();
+    let rhs = tensors.get(&opt.info.matmul.op.rhs.id).unwrap();
+    let out = tensors.get(&opt.info.matmul.op.out.id).unwrap();
 
-    let lhs_strides = context
-        .handles
-        .get_handle(&lhs.id, &burn_ir::TensorStatus::ReadOnly)
+    let lhs_strides = handles
+        .get_handle_ref(&lhs.id)
+        .expect("lhs handle")
         .strides
         .clone();
-    let rhs_strides = context
-        .handles
-        .get_handle(&rhs.id, &burn_ir::TensorStatus::ReadOnly)
+    let rhs_strides = handles
+        .get_handle_ref(&rhs.id)
+        .expect("rhs handle")
         .strides
         .clone();
 
@@ -236,35 +234,27 @@ fn tune_fused<R: Runtime>(
     input: TuneInput<R, MatmulOptimizationTuneArg<R>>,
     selector: FusedMatmulSelector,
 ) -> Result<TuneOutput<R>, String> {
-    let optimization = input.optimization();
-    let context = input.context();
+    let (context, optimization) = input.into_context();
 
     match context {
         TuneContext::Original(context) => {
-            input.mark_executed();
-            match optimization.execute_fused(context, selector) {
-                Ok(out) => Ok(out),
-                Err(_) => {
-                    return tune_fallback::<R>(input);
-                }
-            }
+            optimization
+                .execute_fused(context, selector)
+                .map_err(|e| format!("{e:?}"))
         }
-        TuneContext::Fork(mut fork) => optimization.execute_fused(&mut fork.as_context(), selector),
+        TuneContext::Fork(mut fork) => optimization
+            .execute_fused(&mut fork.as_context(), selector)
+            .map_err(|e| format!("{e:?}")),
     }
-    .map_err(|e| format!("{e:?}"))
 }
 
 fn tune_fallback<R: Runtime>(
     input: TuneInput<R, MatmulOptimizationTuneArg<R>>,
 ) -> Result<TuneOutput<R>, String> {
-    let optimization = input.optimization();
-    let context = input.context();
+    let (context, optimization) = input.into_context();
 
     Ok(match context {
-        TuneContext::Original(context) => {
-            input.mark_executed();
-            optimization.execute_fallback(context)
-        }
+        TuneContext::Original(context) => optimization.execute_fallback(context),
         TuneContext::Fork(mut fork) => optimization.execute_fallback(&mut fork.as_context()),
     })
 }

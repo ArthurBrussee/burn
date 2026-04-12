@@ -1,9 +1,11 @@
 use crate::CubeFusionHandle;
 use burn_fusion::stream::{Context, ContextOwned};
-use burn_ir::TensorId;
+use burn_ir::{HandleContainer, TensorId, TensorIr};
 use cubecl::Runtime;
+use hashbrown::HashMap;
 use std::{
     cell::{Cell, UnsafeCell},
+    ptr::NonNull,
     sync::Arc,
     vec::Drain,
 };
@@ -178,25 +180,42 @@ impl<R: Runtime, O> TuneInput<R, O> {
         }
     }
 
-    /// Retrieve the [autotune context](TuneContext) for the current input.
+    /// Consume the input and split into the mutable context and optimization.
     ///
-    /// For the [`Original`](UnsafeTuneContext::Original) variant this marks the
-    /// context as *executed*, which tells the drop impl **not** to persist
-    /// forked output handles.
-    pub fn context(&self) -> TuneContext<'static, R> {
-        self.context.get()
+    /// For the `Original` variant, also marks the context as executed so
+    /// forked output handles are not persisted on drop.
+    pub fn into_context(self) -> (TuneContext<'static, R>, Arc<O>) {
+        if let UnsafeTuneContext::Original { ref executed, .. } = self.context {
+            executed.set(true);
+        }
+        (self.context.get(), self.optimization)
     }
 
-    /// Mark the Original context as having been used for direct execution.
-    /// When set, the drop impl will **not** persist forked output handles
-    /// (since the Original produced its own outputs).
+    /// Read-only access to the tensor map for key generation.
     ///
-    /// Must be called by tune functions when they execute on the
-    /// `TuneContext::Original` path. Key generation and forked execution
-    /// must NOT call this.
-    pub fn mark_executed(&self) {
-        if let UnsafeTuneContext::Original { executed, .. } = &self.context {
-            executed.set(true);
+    /// Does **not** set the `executed` flag, so forked output handles will
+    /// still be persisted on drop.
+    ///
+    /// # Safety
+    ///
+    /// Returns a shared reference derived from the internal raw pointer.
+    /// Safe because no `&mut` is handed out simultaneously — callers that
+    /// need `&mut` must use [`into_context`](Self::into_context) which
+    /// consumes `self`.
+    pub fn tensors(&self) -> &HashMap<TensorId, TensorIr> {
+        match &self.context {
+            UnsafeTuneContext::Original { ptr, .. } => unsafe { ptr.as_ref().unwrap().tensors },
+            UnsafeTuneContext::Fork { context, .. } => context.tensors(),
+        }
+    }
+
+    /// Read-only access to the handle container for key generation.
+    ///
+    /// Same safety reasoning as [`tensors`](Self::tensors).
+    pub fn handles(&self) -> &HandleContainer<CubeFusionHandle<R>> {
+        match &self.context {
+            UnsafeTuneContext::Original { ptr, .. } => unsafe { ptr.as_ref().unwrap().handles },
+            UnsafeTuneContext::Fork { context, .. } => context.handles(),
         }
     }
 

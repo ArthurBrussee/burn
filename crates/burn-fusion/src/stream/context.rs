@@ -78,6 +78,11 @@ impl<H: Clone> ContextOwned<H> {
         &self.handles
     }
 
+    /// Returns a reference to the tensor map.
+    pub fn tensors(&self) -> &HashMap<TensorId, TensorIr> {
+        &self.tensors
+    }
+
     /// Fork the context again.
     pub fn fork(&self) -> ContextOwned<H> {
         ContextOwned {

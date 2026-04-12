@@ -880,6 +880,7 @@ dependencies = [
  "cubek",
  "derive-new",
  "half",
+ "hashbrown 0.16.1",
  "serde",
 ]
 

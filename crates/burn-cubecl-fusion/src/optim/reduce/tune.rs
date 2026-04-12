@@ -120,13 +120,10 @@ pub(crate) fn create_key<R: Runtime>(
     input: &TuneInput<R, ReduceOptimizationTuneArg<R>>,
 ) -> FusedReduceAutotuneKey {
     let opt = input.optimization();
-    let context = match input.context() {
-        TuneContext::Original(context) => context,
-        TuneContext::Fork(_) => panic!("Forked context not supported for key generation"),
-    };
+    let tensors = input.tensors();
 
-    let input_tensor = context.tensors.get(&opt.info.reduce.op.input.id).unwrap();
-    let out_tensor = context.tensors.get(&opt.info.reduce.op.out.id).unwrap();
+    let input_tensor = tensors.get(&opt.info.reduce.op.input.id).unwrap();
+    let out_tensor = tensors.get(&opt.info.reduce.op.out.id).unwrap();
     let acc = opt.info.reduce.acc.into_elem();
 
     let key = ReduceAutotuneKey::generate(
@@ -163,11 +160,10 @@ fn tune_reduce<R: Runtime>(
     input: TuneInput<R, ReduceOptimizationTuneArg<R>>,
     strategy: &RoutineStrategy,
 ) -> Result<TuneOutput<R>, String> {
-    let optimization = input.optimization();
+    let (context, optimization) = input.into_context();
 
-    match input.context() {
+    match context {
         TuneContext::Original(context) => {
-            input.mark_executed();
             optimization.execute_fused(context, strategy.clone())
         }
         TuneContext::Fork(mut fork) => {
@@ -181,11 +177,10 @@ fn tune_reduce<R: Runtime>(
 fn tune_fallback<R: Runtime>(
     input: TuneInput<R, ReduceOptimizationTuneArg<R>>,
 ) -> Result<TuneOutput<R>, String> {
-    let optimization = input.optimization();
+    let (context, optimization) = input.into_context();
 
-    match input.context() {
+    match context {
         TuneContext::Original(context) => {
-            input.mark_executed();
             optimization.execute_fallback(context);
         }
         TuneContext::Fork(mut fork) => {
