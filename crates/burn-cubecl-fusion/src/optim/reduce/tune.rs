@@ -1,9 +1,5 @@
 use super::optimization::ReduceOptimizationTuneArg;
-use crate::{
-    CubeFusionHandle,
-    engine::trace::TuneOutput,
-    tune::TuneInput,
-};
+use crate::{CubeFusionHandle, engine::trace::TuneOutput, tune::TuneInput};
 use burn_fusion::stream::Context;
 use cubecl::{
     AutotuneKey, CubeTuneId, Runtime,
