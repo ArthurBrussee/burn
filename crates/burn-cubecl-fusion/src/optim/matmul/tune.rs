@@ -240,12 +240,15 @@ fn tune_fused<R: Runtime>(
     let context = input.context();
 
     match context {
-        TuneContext::Original(context) => match optimization.execute_fused(context, selector) {
-            Ok(out) => Ok(out),
-            Err(_) => {
-                return tune_fallback::<R>(input);
+        TuneContext::Original(context) => {
+            input.mark_executed();
+            match optimization.execute_fused(context, selector) {
+                Ok(out) => Ok(out),
+                Err(_) => {
+                    return tune_fallback::<R>(input);
+                }
             }
-        },
+        }
         TuneContext::Fork(mut fork) => optimization.execute_fused(&mut fork.as_context(), selector),
     }
     .map_err(|e| format!("{e:?}"))
@@ -258,7 +261,10 @@ fn tune_fallback<R: Runtime>(
     let context = input.context();
 
     Ok(match context {
-        TuneContext::Original(context) => optimization.execute_fallback(context),
+        TuneContext::Original(context) => {
+            input.mark_executed();
+            optimization.execute_fallback(context)
+        }
         TuneContext::Fork(mut fork) => optimization.execute_fallback(&mut fork.as_context()),
     })
 }

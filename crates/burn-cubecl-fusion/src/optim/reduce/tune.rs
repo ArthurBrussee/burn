@@ -166,7 +166,10 @@ fn tune_reduce<R: Runtime>(
     let optimization = input.optimization();
 
     match input.context() {
-        TuneContext::Original(context) => optimization.execute_fused(context, strategy.clone()),
+        TuneContext::Original(context) => {
+            input.mark_executed();
+            optimization.execute_fused(context, strategy.clone())
+        }
         TuneContext::Fork(mut fork) => {
             optimization.execute_fused(&mut fork.as_context(), strategy.clone())
         }
@@ -181,8 +184,13 @@ fn tune_fallback<R: Runtime>(
     let optimization = input.optimization();
 
     match input.context() {
-        TuneContext::Original(context) => optimization.execute_fallback(context),
-        TuneContext::Fork(mut fork) => optimization.execute_fallback(&mut fork.as_context()),
+        TuneContext::Original(context) => {
+            input.mark_executed();
+            optimization.execute_fallback(context);
+        }
+        TuneContext::Fork(mut fork) => {
+            optimization.execute_fallback(&mut fork.as_context());
+        }
     };
 
     Ok(TuneOutput::UnChecked(std::marker::PhantomData))

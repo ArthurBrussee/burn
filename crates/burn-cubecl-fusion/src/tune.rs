@@ -179,8 +179,25 @@ impl<R: Runtime, O> TuneInput<R, O> {
     }
 
     /// Retrieve the [autotune context](TuneContext) for the current input.
+    ///
+    /// For the [`Original`](UnsafeTuneContext::Original) variant this marks the
+    /// context as *executed*, which tells the drop impl **not** to persist
+    /// forked output handles.
     pub fn context(&self) -> TuneContext<'static, R> {
         self.context.get()
+    }
+
+    /// Mark the Original context as having been used for direct execution.
+    /// When set, the drop impl will **not** persist forked output handles
+    /// (since the Original produced its own outputs).
+    ///
+    /// Must be called by tune functions when they execute on the
+    /// `TuneContext::Original` path. Key generation and forked execution
+    /// must NOT call this.
+    pub fn mark_executed(&self) {
+        if let UnsafeTuneContext::Original { executed, .. } = &self.context {
+            executed.set(true);
+        }
     }
 
     /// Retrieve the optimization for the current input.
@@ -204,8 +221,7 @@ impl<R: Runtime> UnsafeTuneContext<R> {
 
     fn get(&self) -> TuneContext<'static, R> {
         match self {
-            UnsafeTuneContext::Original { ptr, executed, .. } => {
-                executed.set(true);
+            UnsafeTuneContext::Original { ptr, .. } => {
                 TuneContext::Original(unsafe { ptr.as_mut().unwrap() })
             }
             UnsafeTuneContext::Fork {
