@@ -3,7 +3,7 @@ use crate::{
     CubeFusionHandle,
     engine::trace::TuneOutput,
     optim::matmul::{AcceleratedTileKind, FusedMatmulSelector},
-    tune::{TuneContext, TuneInput},
+    tune::TuneInput,
 };
 use burn_fusion::stream::Context;
 use cubecl::{
@@ -234,27 +234,13 @@ fn tune_fused<R: Runtime>(
     input: TuneInput<R, MatmulOptimizationTuneArg<R>>,
     selector: FusedMatmulSelector,
 ) -> Result<TuneOutput<R>, String> {
-    let (context, optimization) = input.into_context();
-
-    match context {
-        TuneContext::Original(context) => {
-            optimization
-                .execute_fused(context, selector)
-                .map_err(|e| format!("{e:?}"))
-        }
-        TuneContext::Fork(mut fork) => optimization
-            .execute_fused(&mut fork.as_context(), selector)
-            .map_err(|e| format!("{e:?}")),
-    }
+    input
+        .execute(|context, optimization| optimization.execute_fused(context, selector))
+        .map_err(|e| format!("{e:?}"))
 }
 
 fn tune_fallback<R: Runtime>(
     input: TuneInput<R, MatmulOptimizationTuneArg<R>>,
 ) -> Result<TuneOutput<R>, String> {
-    let (context, optimization) = input.into_context();
-
-    Ok(match context {
-        TuneContext::Original(context) => optimization.execute_fallback(context),
-        TuneContext::Fork(mut fork) => optimization.execute_fallback(&mut fork.as_context()),
-    })
+    Ok(input.execute(|context, optimization| optimization.execute_fallback(context)))
 }

@@ -3,60 +3,24 @@ use burn_fusion::stream::{Context, ContextOwned};
 use burn_ir::{HandleContainer, TensorId, TensorIr};
 use cubecl::Runtime;
 use hashbrown::HashMap;
-use std::{
-    cell::{Cell, UnsafeCell},
-    ptr::NonNull,
-    sync::Arc,
-    vec::Drain,
-};
+use std::{cell::UnsafeCell, sync::Arc};
 
-/// Fusion context used when tuning kernels.
-///
-/// Either the original context is returned or a fork of the original.
-/// The fork is only given when performing autotuning, and not when actually performing the
-/// operation.
-///
-/// # Sequential execution and rollback
-///
-/// All tune functions (fused and fallback) run on the same thread, sequentially.
-/// When a fused optimization fails on the [`Original`](TuneContext::Original) context,
-/// the optimization is responsible for rolling back any modifications it made
-/// (e.g., restoring input handle strides and re-registering output handles). This
-/// guarantees the context is in a clean state before the fallback path executes on it.
-///
-/// For the [`Fork`](TuneContext::Fork) path (used during benchmarking), failures are
-/// simply discarded, the fork is dropped and the original context is untouched.
-pub enum TuneContext<'a, R: Runtime> {
-    Original(&'a mut Context<'a, CubeFusionHandle<R>>),
-    Fork(TuneContextFork<R>),
-}
+/// Raw pointer wrapper that is `Send` when the pointee is `Send`.
+#[repr(transparent)]
+pub(crate) struct SendPtr<T: ?Sized>(*mut T);
 
-/// A forked context that writes newly created output handles into a shared
-/// [`SharedNewHandles`] cell on [`Drop`].
-///
-/// When execution on a fork produces output handles (tensor IDs not present at
-/// fork time), those handles are collected and stored in the shared cell so that
-/// the owning [`UnsafeTuneContext::Original`] can persist them on drop if it was
-/// never itself executed.
-pub struct TuneContextFork<R: Runtime> {
-    context: Box<ContextOwned<CubeFusionHandle<R>>>,
-    /// Shared with the [`UnsafeTuneContext::Original`] that spawned this fork.
-    /// New output handles are pushed here on drop.
-    new_handles: Arc<SharedNewHandles<R>>,
-    /// Raw pointer to the original [`Context`]. Used at drop time to check
-    /// which handle IDs already exist, so only truly new outputs are collected.
-    ptr: *mut Context<'static, CubeFusionHandle<R>>,
-}
+// SAFETY: the caller upholds the non-aliasing invariant; when `T: Send`,
+// moving the pointer across threads is sound.
+unsafe impl<T: ?Sized + Send> Send for SendPtr<T> {}
 
 /// Thread-safe shared storage for newly created output handles.
 ///
 /// # Safety
 ///
-/// All access is sequential on the same thread during autotuning the [`Sync`]
+/// All access is sequential on the same thread during autotuning; the `Sync`
 /// impl is required for [`Arc`] but concurrent access never occurs.
-struct SharedNewHandles<R: Runtime>(UnsafeCell<Vec<(TensorId, CubeFusionHandle<R>)>>);
+pub(crate) struct SharedNewHandles<R: Runtime>(UnsafeCell<Vec<(TensorId, CubeFusionHandle<R>)>>);
 
-unsafe impl<R: Runtime> Send for SharedNewHandles<R> {}
 unsafe impl<R: Runtime> Sync for SharedNewHandles<R> {}
 
 impl<R: Runtime> SharedNewHandles<R> {
@@ -64,262 +28,213 @@ impl<R: Runtime> SharedNewHandles<R> {
         Self(UnsafeCell::new(Vec::new()))
     }
 
-    /// Push a newly created handle. Only called from `TuneContextFork::drop`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no concurrent access (guaranteed by sequential execution).
+    /// SAFETY: caller must ensure no concurrent access (guaranteed by
+    /// sequential execution).
     unsafe fn push(&self, id: TensorId, handle: CubeFusionHandle<R>) {
         unsafe { &mut *self.0.get() }.push((id, handle));
     }
 
-    /// Read all collected handles. Only called from `UnsafeTuneContext::drop`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no concurrent access and that all writers have finished.
-    unsafe fn drain(&self) -> Drain<'_, (TensorId, CubeFusionHandle<R>)> {
-        unsafe { &mut *self.0.get() }.drain(..)
+    /// SAFETY: caller must ensure no concurrent access and that all writers
+    /// have finished.
+    unsafe fn take(&self) -> Vec<(TensorId, CubeFusionHandle<R>)> {
+        std::mem::take(unsafe { &mut *self.0.get() })
     }
 
-    /// Clear all collected handles. Called before each new fork execution in
-    /// [`UnsafeTuneContext::get`] to discard outputs from prior benchmark runs.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no concurrent access (guaranteed by sequential execution).
+    /// SAFETY: caller must ensure no concurrent access.
     unsafe fn clear(&self) {
         unsafe { &mut *self.0.get() }.clear();
     }
 }
 
-impl<R: Runtime> TuneContextFork<R> {
-    /// Convert the forked context into a borrowed [`Context`] for optimization execution.
-    pub fn as_context(&mut self) -> Context<'_, CubeFusionHandle<R>> {
-        self.context.as_context()
-    }
-}
-
-impl<R: Runtime> Drop for TuneContextFork<R> {
-    fn drop(&mut self) {
-        let fork_handles = self.context.handles();
-
-        let original = unsafe { self.ptr.as_ref().unwrap() };
-        for id in fork_handles.handle_ids() {
-            if !original.handles.has_handle(id)
-                && let Some(handle) = fork_handles.get_handle_ref(id)
-            {
-                // SAFETY: sequential execution no concurrent access.
-                unsafe { self.new_handles.push(*id, handle.clone()) };
-            }
-        }
-    }
-}
-
-/// Fusion input wrapper containing the context and the optimization.
+/// Fusion input for autotuning.
 ///
-/// # Safety
+/// The [`Original`](Self::Original) variant wraps the real [`Context`] via a
+/// raw pointer (valid only inside [`LocalTuner::execute`](cubecl::tune::LocalTuner::execute)).
+/// The [`Fork`](Self::Fork) variant owns a forked context used for benchmark runs.
 ///
-/// This should only be used with the [tuner](cubecl::tune::LocalTuner), since safety assumptions
-/// are made based on its behavior.
-pub struct TuneInput<R: Runtime, O> {
-    context: UnsafeTuneContext<R>,
-    optimization: Arc<O>,
-}
-
-/// Unsafe wrapper around the context.
+/// # Sequential execution and rollback
 ///
-/// # Safety
-///
-/// The wrapper removes the context lifetime.
-///
-/// For it to be correct, the context must not be used after the invocation of the
-/// [cubecl::tune::LocalTuner::execute] function. This is the case, since autotune functions are
-/// tuned using a cloned version of the input; therefore, a fork of the context will be used to find
-/// the best kernel to use, which can be async.
+/// All tune functions (fused and fallback) run on the same thread, sequentially.
+/// When a fused optimization fails on the [`Original`](Self::Original) path, the
+/// optimization is responsible for rolling back any modifications it made
+/// (e.g. restoring input handle strides). For the [`Fork`](Self::Fork) path,
+/// failures are discarded: the fork is dropped and the original context is
+/// untouched.
 ///
 /// # Output handle persistence (clone contract)
 ///
-/// When this context is cloned (for autotuning), the resulting fork shares a
-/// [`SharedNewHandles`] cell with the original. Newly created output handles from
-/// forked executions are collected via [`TuneContextFork::drop`].
-///
-/// When the [`Original`](UnsafeTuneContext::Original) is dropped without [`get()`]
-/// having been called (i.e., the original context was never used for execution), the
-/// collected handles are persisted to the real context. This upholds the [`Clone`]
-/// contract: output handles produced by a forked execution are visible in the
-/// original context even when the original path was never taken.
-enum UnsafeTuneContext<R: Runtime> {
+/// When an [`Original`](Self::Original) is cloned, the resulting [`Fork`](Self::Fork)
+/// shares a [`SharedNewHandles`] with it. Forked executions collect newly
+/// produced output handles on drop. If the original is then dropped without
+/// [`execute`](Self::execute) being called, the collected handles are persisted
+/// to the real context. This upholds the [`Clone`] contract: outputs produced
+/// by a forked execution are visible in the original context even when the
+/// original path was never taken.
+pub(crate) enum TuneInput<R: Runtime, O> {
     Original {
-        ptr: *mut Context<'static, CubeFusionHandle<R>>,
-        /// Tracks whether [`get()`](UnsafeTuneContext::get) was called.
-        /// If false at drop time, forked output handles must be persisted.
-        executed: Cell<bool>,
-        /// Shared with forks cloned from this original.
+        /// Valid for the duration of `LocalTuner::execute`. Deliberately never
+        /// stored in [`Fork`](Self::Fork) — on wasm a benchmark may outlive
+        /// the execute call and the pointer would dangle.
+        ptr: SendPtr<Context<'static, CubeFusionHandle<R>>>,
         new_handles: Arc<SharedNewHandles<R>>,
+        /// If false at drop time, forked output handles must be persisted.
+        executed: bool,
+        optimization: Arc<O>,
     },
     Fork {
         context: Box<ContextOwned<CubeFusionHandle<R>>>,
-        /// Shared with the original forks write new handles here.
         new_handles: Arc<SharedNewHandles<R>>,
-        ptr: *mut Context<'static, CubeFusionHandle<R>>,
+        /// Snapshot of handle IDs at fork time, so drop can identify which
+        /// outputs were produced by the benchmark run.
+        original_ids: Vec<TensorId>,
+        optimization: Arc<O>,
     },
 }
 
-unsafe impl<R: Runtime> Send for UnsafeTuneContext<R> {}
-unsafe impl<R: Runtime, O> Send for TuneInput<R, O> {}
-
 impl<R: Runtime, O> TuneInput<R, O> {
-    /// Create a new autotune input from the [context](Context) and an optimization.
-    pub fn new(context: &mut Context<CubeFusionHandle<R>>, optimization: O) -> Self {
-        let context = UnsafeTuneContext::new(context);
+    /// Create a new autotune input from a [`Context`] and an optimization.
+    pub(crate) fn new(context: &mut Context<CubeFusionHandle<R>>, optimization: O) -> Self {
+        // Erase the context lifetime so `TuneInput` can be `'static`, as
+        // required by `LocalTuner::execute`.
+        #[allow(clippy::unnecessary_cast)]
+        let ptr = core::ptr::from_mut(context) as *mut Context<'static, _>;
 
-        Self {
-            context,
+        Self::Original {
+            ptr: SendPtr(ptr),
+            new_handles: Arc::new(SharedNewHandles::new()),
+            executed: false,
             optimization: Arc::new(optimization),
         }
     }
 
-    /// Consume the input and split into the mutable context and optimization.
-    ///
-    /// For the `Original` variant, also marks the context as executed so
-    /// forked output handles are not persisted on drop.
-    pub fn into_context(self) -> (TuneContext<'static, R>, Arc<O>) {
-        if let UnsafeTuneContext::Original { ref executed, .. } = self.context {
-            executed.set(true);
-        }
-        (self.context.get(), self.optimization)
-    }
-
-    /// Read-only access to the tensor map for key generation.
-    ///
-    /// Does **not** set the `executed` flag, so forked output handles will
-    /// still be persisted on drop.
-    ///
-    /// # Safety
-    ///
-    /// Returns a shared reference derived from the internal raw pointer.
-    /// Safe because no `&mut` is handed out simultaneously — callers that
-    /// need `&mut` must use [`into_context`](Self::into_context) which
-    /// consumes `self`.
-    pub fn tensors(&self) -> &HashMap<TensorId, TensorIr> {
-        match &self.context {
-            UnsafeTuneContext::Original { ptr, .. } => unsafe { ptr.as_ref().unwrap().tensors },
-            UnsafeTuneContext::Fork { context, .. } => context.tensors(),
+    /// Read-only access to the tensor map for autotune key generation.
+    pub(crate) fn tensors(&self) -> &HashMap<TensorId, TensorIr> {
+        match self {
+            // SAFETY: shared borrow only; `&self` excludes any `&mut`, which
+            // only comes from `execute(self)` consuming `self`.
+            Self::Original { ptr, .. } => unsafe { &*ptr.0 }.tensors,
+            Self::Fork { context, .. } => context.tensors(),
         }
     }
 
-    /// Read-only access to the handle container for key generation.
-    ///
-    /// Same safety reasoning as [`tensors`](Self::tensors).
-    pub fn handles(&self) -> &HandleContainer<CubeFusionHandle<R>> {
-        match &self.context {
-            UnsafeTuneContext::Original { ptr, .. } => unsafe { ptr.as_ref().unwrap().handles },
-            UnsafeTuneContext::Fork { context, .. } => context.handles(),
+    /// Read-only access to the handle container for autotune key generation.
+    pub(crate) fn handles(&self) -> &HandleContainer<CubeFusionHandle<R>> {
+        match self {
+            // SAFETY: same as `tensors`.
+            Self::Original { ptr, .. } => unsafe { &*ptr.0 }.handles,
+            Self::Fork { context, .. } => context.handles(),
         }
     }
 
     /// Retrieve the optimization for the current input.
-    pub fn optimization(&self) -> &O {
-        &self.optimization
-    }
-}
-
-impl<R: Runtime> UnsafeTuneContext<R> {
-    fn new(context: &mut Context<'_, CubeFusionHandle<R>>) -> Self {
-        let ptr = core::ptr::from_mut(context);
-
-        // It is necessary for the lifetime.
-        #[allow(clippy::unnecessary_cast)]
-        Self::Original {
-            ptr: ptr as *mut Context<'static, _>,
-            executed: Cell::new(false),
-            new_handles: Arc::new(SharedNewHandles::new()),
-        }
-    }
-
-    fn get(&self) -> TuneContext<'static, R> {
+    pub(crate) fn optimization(&self) -> &O {
         match self {
-            UnsafeTuneContext::Original { ptr, .. } => {
-                TuneContext::Original(unsafe { ptr.as_mut().unwrap() })
-            }
-            UnsafeTuneContext::Fork {
-                context,
-                new_handles,
-                ptr,
-            } => {
-                let fork = context.fork();
-
-                // Each new fork execution resets the handles saved by the previous execution,
-                // making sure no memory leak is created by keeping handles that were discarded.
-                unsafe { new_handles.clear() };
-                TuneContext::Fork(TuneContextFork {
-                    context: Box::new(fork),
-                    new_handles: new_handles.clone(),
-                    ptr: *ptr,
-                })
-            }
+            Self::Original { optimization, .. } | Self::Fork { optimization, .. } => optimization,
         }
     }
-}
 
-impl<R: Runtime> Drop for UnsafeTuneContext<R> {
-    fn drop(&mut self) {
-        if let UnsafeTuneContext::Original {
-            ptr,
-            executed,
-            new_handles,
-        } = self
-            && !executed.get()
-        {
-            // The original context was never used for execution persist
-            // output handles that were produced by forked executions.
-            let context = unsafe { ptr.as_mut().unwrap() };
-            // SAFETY: all forks have been dropped (sequential execution),
-            // so no concurrent writers.
-            let handles = unsafe { new_handles.drain() };
-            for (id, handle) in handles {
-                context.handles.register_handle(id, handle);
+    /// Consume the input and run a closure with mutable access to the
+    /// [`Context`] and the optimization. Consuming `self` is what makes
+    /// the `&mut Context` sound: no other borrow can exist once it's gone.
+    pub(crate) fn execute<F, T>(mut self, f: F) -> T
+    where
+        F: FnOnce(&mut Context<'_, CubeFusionHandle<R>>, &O) -> T,
+    {
+        match &mut self {
+            Self::Original {
+                ptr,
+                executed,
+                optimization,
+                ..
+            } => {
+                // Suppresses drop-time persistence — the closure runs on the
+                // real context directly, so there's nothing to drain.
+                *executed = true;
+                // SAFETY: `self` is consumed, no other borrow via this
+                // `TuneInput` can exist, and the ptr is live (still inside
+                // `LocalTuner::execute`).
+                f(unsafe { &mut *ptr.0 }, optimization)
             }
+            Self::Fork {
+                context,
+                optimization,
+                ..
+            } => f(&mut context.as_context(), optimization),
         }
     }
 }
 
 impl<R: Runtime, O> Clone for TuneInput<R, O> {
     fn clone(&self) -> Self {
-        Self {
-            context: self.context.clone(),
-            optimization: self.optimization.clone(),
+        // Cloning always produces a `Fork` — this drives benchmark isolation
+        // and lets the clone outlive `LocalTuner::execute` on wasm.
+        let (forked, new_handles, optimization) = match self {
+            Self::Original {
+                ptr,
+                new_handles,
+                optimization,
+                ..
+            } => {
+                // SAFETY: shared borrow only; `&self` excludes `execute`.
+                let ctx = unsafe { &*ptr.0 };
+                (ctx.fork(), new_handles.clone(), optimization.clone())
+            }
+            Self::Fork {
+                context,
+                new_handles,
+                optimization,
+                ..
+            } => (context.fork(), new_handles.clone(), optimization.clone()),
+        };
+        let original_ids = forked.handles().handle_ids().copied().collect();
+        // Each new fork resets the handles saved by the previous execution,
+        // so no memory leak is created by keeping discarded handles.
+        // SAFETY: sequential execution, no concurrent access.
+        unsafe { new_handles.clear() };
+        Self::Fork {
+            context: Box::new(forked),
+            new_handles,
+            original_ids,
+            optimization,
         }
     }
 }
 
-impl<R: Runtime> Clone for UnsafeTuneContext<R> {
-    fn clone(&self) -> Self {
+impl<R: Runtime, O> Drop for TuneInput<R, O> {
+    fn drop(&mut self) {
         match self {
-            UnsafeTuneContext::Original {
-                ptr, new_handles, ..
-            } => {
-                let context: &mut Context<'static, CubeFusionHandle<R>> =
-                    unsafe { ptr.as_mut().unwrap() };
-                let forked = context.fork();
-
-                UnsafeTuneContext::Fork {
-                    context: Box::new(forked),
-                    new_handles: new_handles.clone(),
-                    ptr: *ptr,
-                }
-            }
-            UnsafeTuneContext::Fork {
-                context,
+            Self::Original {
                 ptr,
                 new_handles,
+                executed,
+                ..
             } => {
-                // Fork-of-fork: they modify the same new_handles.
-                UnsafeTuneContext::Fork {
-                    context: Box::new(context.fork()),
-                    new_handles: new_handles.clone(),
-                    ptr: *ptr,
+                if *executed {
+                    return;
+                }
+                // The original was never executed; persist output handles
+                // that were produced by forked executions.
+                // SAFETY: still inside `LocalTuner::execute`; all forks are
+                // dropped (sequential execution), so no concurrent writers.
+                let context = unsafe { &mut *ptr.0 };
+                for (id, handle) in unsafe { new_handles.take() } {
+                    context.handles.register_handle(id, handle);
+                }
+            }
+            Self::Fork {
+                context,
+                new_handles,
+                original_ids,
+                ..
+            } => {
+                let fork_handles = context.handles();
+                for id in fork_handles.handle_ids() {
+                    if !original_ids.contains(id)
+                        && let Some(handle) = fork_handles.get_handle_ref(id)
+                    {
+                        // SAFETY: sequential execution, no concurrent access.
+                        unsafe { new_handles.push(*id, handle.clone()) };
+                    }
                 }
             }
         }

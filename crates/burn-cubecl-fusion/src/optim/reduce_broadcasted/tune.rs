@@ -3,7 +3,7 @@ use crate::{
     CubeFusionHandle,
     engine::trace::TuneOutput,
     optim::{reduce::ReduceOptimizationInfo, reduce_broadcasted::ReduceBlockOptimArg},
-    tune::{TuneContext, TuneInput},
+    tune::TuneInput,
 };
 use burn_fusion::stream::Context;
 use cubecl::{
@@ -146,33 +146,16 @@ fn tune_reduce<R: Runtime>(
     input: TuneInput<R, ReduceBroadcastedOptimizationTuneArg<R>>,
     strategy: &RoutineStrategy,
 ) -> Result<TuneOutput<R>, String> {
-    let (context, optimization) = input.into_context();
-
-    match context {
-        TuneContext::Original(context) => {
-            optimization.execute_fused(context, strategy.clone())
-        }
-        TuneContext::Fork(mut fork) => {
-            optimization.execute_fused(&mut fork.as_context(), strategy.clone())
-        }
-    }
-    .map_err(|e| format!("{e:?}"))
+    input
+        .execute(|context, optimization| optimization.execute_fused(context, strategy.clone()))
+        .map_err(|e| format!("{e:?}"))
 }
 
 /// Executes the fallback implementation for the reduction.
 fn tune_fallback<R: Runtime>(
     input: TuneInput<R, ReduceBroadcastedOptimizationTuneArg<R>>,
 ) -> Result<TuneOutput<R>, String> {
-    let (context, optimization) = input.into_context();
-
-    match context {
-        TuneContext::Original(context) => {
-            optimization.execute_fallback(context);
-        }
-        TuneContext::Fork(mut fork) => {
-            optimization.execute_fallback(&mut fork.as_context());
-        }
-    };
+    input.execute(|context, optimization| optimization.execute_fallback(context));
 
     // Fallback is often used as a baseline, returning unchecked output.
     Ok(TuneOutput::UnChecked(std::marker::PhantomData))
